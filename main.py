@@ -8,6 +8,9 @@ from datetime import datetime
 import sys
 import pytz
 import random
+import os
+from dotenv import load_dotenv
+load_dotenv()
 
 # === SETUP LOGGING ===
 logging.basicConfig(
@@ -26,16 +29,19 @@ logger.addHandler(console_handler)
 
 # === LOAD CONFIGURATION ===
 config = configparser.ConfigParser()
+# === LOAD CONFIGURATION USING ENVIRONMENT VARIABLES ===
 try:
-    config.read('config.ini')
-    BEARER_TOKEN = config['Twitter']['BearerToken']
-    TELEGRAM_BOT_TOKEN = config['Telegram']['BotToken']
-    TELEGRAM_CHAT_ID = config['Telegram']['ChatID']
-    OUTPUT_CSV = config['General']['OutputCSV']
-except KeyError as e:
-    logger.error(f"Config error: Missing {e}")
-    print(f"❌ Config error: Missing {e}. Check config.ini.")
+    BEARER_TOKEN = os.getenv('BEARER_TOKEN')
+    TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
+    OUTPUT_CSV = os.getenv('OUTPUT_CSV')
+
+    if not BEARER_TOKEN or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not OUTPUT_CSV:
+        raise ValueError("One or more environment variables are missing.")
+except Exception as e:
+    print(f"❌ Error: {e}")
     sys.exit(1)
+
 
 # Twitter filter rule to capture voting-related tweets from Kenya
 RULE_VALUE = '-is:retweet (vote OR pick OR choose OR candidate) (place_country:KE OR -place_country:KE)'
