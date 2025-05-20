@@ -29,10 +29,10 @@ try:
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
     OUTPUT_CSV = os.getenv('OUTPUT_CSV', 'output.csv')
-    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+    GT_TOKEN = os.getenv('GT_TOKEN')
     GIST_ID = os.getenv('GIST_ID')
 
-    for var in [BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GITHUB_TOKEN, GIST_ID]:
+    for var in [BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GT_TOKEN, GIST_ID]:
         if not var:
             raise ValueError("Missing required environment variable.")
 except Exception as e:
@@ -48,7 +48,7 @@ HEADERS = {'Authorization': f'Bearer {BEARER_TOKEN}', 'Content-type': 'applicati
 # === GIST STORAGE ===
 def fetch_processed_ids_from_gist():
     gist_url = f"https://api.github.com/gists/{GIST_ID}"  # Fixed URL
-    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    headers = {"Authorization": f"token {GT_TOKEN}", "Accept": "application/vnd.github.v3+json"}
     try:
         response = requests.get(gist_url, headers=headers, timeout=10)
         if response.status_code != 200:
@@ -66,7 +66,7 @@ def update_gist_with_new_ids(existing_ids, new_ids):
         content = "\n".join(sorted(all_ids))
         payload = {"files": {"processed_tweets.txt": {"content": content}}}
         gist_url = f"https://api.github.com/gists/{GIST_ID}"  # Fixed URL
-        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        headers = {"Authorization": f"token {GT_TOKEN}", "Accept": "application/vnd.github.v3+json"}
         response = requests.patch(gist_url, headers=headers, json=payload, timeout=10)
         if response.status_code != 200:
             logger.error(f"Gist update failed: {response.status_code} - {response.text}")
