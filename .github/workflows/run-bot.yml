@@ -3,7 +3,7 @@ name: Run Twitter Poll Detector
 on:
   schedule:
     - cron: '0 * * * *'  # runs every hour
-  workflow_dispatch:     # allows manual triggering
+  workflow_dispatch:  # allows manual triggering
 
 jobs:
   run-script:
@@ -28,5 +28,6 @@ jobs:
         BEARER_TOKEN: ${{ secrets.BEARER_TOKEN }}
         TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
         TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        OUTPUT_CSV: results.csv
+        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        GIST_ID: ${{ secrets.GIST_ID }}
       run: python main.py
