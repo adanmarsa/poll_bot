@@ -1,352 +1,249 @@
+import time
 import requests
 import json
 import csv
-import time
 import logging
-import configparser
-from datetime import datetime
 import sys
 import pytz
-import random
 import os
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
+
 load_dotenv()
 
-# === SETUP LOGGING ===
+# === LOGGING ===
 logging.basicConfig(
     filename='poll_detector.log',
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
 )
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.DEBUG)
 console_handler = logging.StreamHandler()
-console_handler.setLevel(logging.DEBUG)
-formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
-console_handler.setFormatter(formatter)
+console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
 logger.addHandler(console_handler)
 
-# === LOAD CONFIGURATION ===
-config = configparser.ConfigParser()
-# === LOAD CONFIGURATION USING ENVIRONMENT VARIABLES ===
+# === CONFIG ===
 try:
     BEARER_TOKEN = os.getenv('BEARER_TOKEN')
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-    OUTPUT_CSV = os.getenv('OUTPUT_CSV')
+    OUTPUT_CSV = os.getenv('OUTPUT_CSV', 'output.csv')
+    GITHUB_TOKEN = os.getenv('GITHUB_TOKEN')
+    GIST_ID = os.getenv('GIST_ID')
 
-    if not BEARER_TOKEN or not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID or not OUTPUT_CSV:
-        raise ValueError("One or more environment variables are missing.")
+    for var in [BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GITHUB_TOKEN, GIST_ID]:
+        if not var:
+            raise ValueError("Missing required environment variable.")
 except Exception as e:
-    print(f"❌ Error: {e}")
+    logger.error(f"❌ Config error: {e}")
     sys.exit(1)
 
+# === CONSTANTS ===
+RULE_VALUE = '-is:retweet from:LacaNew'   # Added candidate names
+CANDIDATE_NAMES = ["Ruto", "William Ruto", "Rigathi", "Gachagua", "Matiangi", "Musyoka", "Omtatah", "Maraga", "Kalonzo"]
+BLOCKLIST = ["movie", "food", "sport", "city", "music"]  # Re-enabled blocklist
+HEADERS = {'Authorization': f'Bearer {BEARER_TOKEN}', 'Content-type': 'application/json'}
 
-# Twitter filter rule to capture voting-related tweets from Kenya
-RULE_VALUE = '-is:retweet (vote OR pick OR choose OR candidate) (place_country:KE OR -place_country:KE)'
+# === GIST STORAGE ===
+def fetch_processed_ids_from_gist():
+    gist_url = f"https://api.github.com/gists/{GIST_ID}"  # Fixed URL
+    headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+    try:
+        response = requests.get(gist_url, headers=headers, timeout=10)
+        if response.status_code != 200:
+            logger.error(f"Gist fetch failed: {response.status_code} - {response.text}")
+            return set()
+        content = response.json()["files"]["processed_tweets.txt"]["content"]
+        return set(line.strip() for line in content.splitlines() if line.strip() and not line.startswith("#"))
+    except Exception as e:
+        logger.error(f"Gist fetch error: {e}")
+        return set()
 
-# List of candidate names to check in poll options
-CANDIDATE_NAMES = [
-    "Ruto", "Gachagua", "Matiangi", "Musyoka",
-    "Omtatah", "Maraga", "Kalonzo"
-]
+def update_gist_with_new_ids(existing_ids, new_ids):
+    try:
+        all_ids = existing_ids.union(new_ids)
+        content = "\n".join(sorted(all_ids))
+        payload = {"files": {"processed_tweets.txt": {"content": content}}}
+        gist_url = f"https://api.github.com/gists/{GIST_ID}"  # Fixed URL
+        headers = {"Authorization": f"token {GITHUB_TOKEN}", "Accept": "application/vnd.github.v3+json"}
+        response = requests.patch(gist_url, headers=headers, json=payload, timeout=10)
+        if response.status_code != 200:
+            logger.error(f"Gist update failed: {response.status_code} - {response.text}")
+        else:
+            logger.info("✅ Gist updated with new tweet IDs.")
+    except Exception as e:
+        logger.error(f"Gist update error: {e}")
 
-# Blocklist to skip irrelevant polls
-BLOCKLIST = ["movie", "food", "sport", "city", "music"]
+# === TWITTER SEARCH ===
+def search_recent_tweets():
+    logger.info("🔍 Searching for recent tweets...")
+    now = datetime.now(pytz.UTC)
+    start_time = (now - timedelta(minutes=120)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    logger.debug(f"Generated start_time: {start_time}")
 
-# Headers used in all Twitter API requests
-HEADERS = {
-    'Authorization': f'Bearer {BEARER_TOKEN}',
-    'Content-type': 'application/json'
-}
-
-# === FUNCTION: Set Twitter Filtering Rules ===
-def set_rules():
-    """
-    Clears existing rules and sets a new rule to capture voting-related tweets from Kenya.
-    """
-    rules_url = "https://api.twitter.com/2/tweets/search/stream/rules"
-    for attempt in range(3):
-        try:
-            # Get current rules
-            current_rules = requests.get(rules_url, headers=HEADERS).json()
-            logger.info(f"Attempt {attempt + 1}: Current rules: {current_rules}")
-            print(f"Attempt {attempt + 1}: Current rules: {current_rules}")
-
-            # Delete existing rules if any
-            if 'data' in current_rules and current_rules['data']:
-                rule_ids = [rule['id'] for rule in current_rules['data']]
-                delete_payload = {'delete': {'ids': rule_ids}}
-                delete_response = requests.post(rules_url, headers=HEADERS, json=delete_payload)
-                if delete_response.status_code != 200:
-                    logger.error(f"Attempt {attempt + 1}: Failed to delete rules: {delete_response.status_code} - {delete_response.text}")
-                    print(f"❌ Attempt {attempt + 1}: Failed to delete rules: {delete_response.status_code} - {delete_response.text}")
-                    time.sleep(2)
-                    continue
-                logger.info(f"Attempt {attempt + 1}: Deleted rules: {rule_ids}")
-                print(f"✅ Attempt {attempt + 1}: Deleted rules: {rule_ids}")
-
-            # Add the new rule
-            payload = {
-                "add": [
-                    {"value": RULE_VALUE, "tag": "Kenya President Poll Detector"}
-                ]
-            }
-            add_response = requests.post(rules_url, headers=HEADERS, json=payload)
-            if add_response.status_code != 201:
-                logger.error(f"Attempt {attempt + 1}: Failed to add rule: {add_response.status_code} - {add_response.text}")
-                print(f"❌ Attempt {attempt + 1}: Failed to add rule: {add_response.status_code} - {add_response.text}")
-                time.sleep(2)
-                continue
-            logger.info("Twitter stream rules set successfully.")
-            print("✅ Twitter stream rules set successfully.")
-            return True
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Attempt {attempt + 1}: Network error setting rules: {e}")
-            print(f"❌ Attempt {attempt + 1}: Network error setting rules: {e}")
-            time.sleep(2)
-        except Exception as e:
-            logger.error(f"Attempt {attempt + 1}: Unexpected error setting rules: {e}")
-            print(f"❌ Attempt {attempt + 1}: Unexpected error setting rules: {e}")
-            time.sleep(2)
-    logger.error("Failed to set rules after retries")
-    print("❌ Failed to set rules after retries")
-    return False
-
-# === FUNCTION: Start the Twitter Stream ===
-def start_stream():
-    """
-    Connects to Twitter’s filtered stream endpoint and listens for live tweets that match the rule.
-    """
-    url = (
-        "https://api.twitter.com/2/tweets/search/stream"
-        "?tweet.fields=created_at,attachments,author_id,text"
-        "&expansions=attachments.poll_ids,author_id"
-        "&poll.fields=duration_minutes,end_datetime,voting_status,options"
-        "&user.fields=username"
+    search_url = (
+        f"https://api.twitter.com/2/tweets/search/recent"
+        f"?query={requests.utils.quote(RULE_VALUE)}"
+        f"&tweet.fields=created_at,attachments,author_id,text"
+        f"&expansions=attachments.poll_ids,author_id"
+        f"&poll.fields=duration_minutes,end_datetime,voting_status,options"
+        f"&user.fields=username"
+        f"&start_time={start_time}"
+        f"&max_results=20"
     )
 
-    last_heartbeat = time.time()
-    retry_count = 0
-    max_retries = 10
-    base_delay = 15  # Increased from 5 seconds
-
-    while retry_count < max_retries:
+    for attempt in range(3):
         try:
-            logger.info("Starting poll detection stream...")
-            print("🚀 Starting poll detection stream... Listening for tweets...")
-            with requests.get(url, headers=HEADERS, stream=True, timeout=30) as response:
-                if response.status_code != 200:
-                    logger.error(f"Stream connection failed: {response.status_code} - {response.text}")
-                    print(f"❌ Stream connection failed: {response.status_code} - {response.text}")
-                    if response.status_code == 429:
-                        delay = base_delay * (2 ** retry_count) + random.uniform(0, 1)  # Exponential backoff
-                        logger.warning(f"Rate limit hit (429). Retrying in {delay:.2f} seconds...")
-                        print(f"⚠️ Rate limit hit (429). Retrying in {delay:.2f} seconds...")
-                        time.sleep(delay)
-                        retry_count += 1
-                        continue
-                    raise requests.exceptions.RequestException("Stream connection failed")
+            response = requests.get(search_url, headers=HEADERS, timeout=10)
+            if response.status_code != 200:
+                logger.error(f"Twitter error: {response.status_code} - {response.text}")
+                if response.status_code == 429:
+                    logger.info("Rate limit hit, retrying after 60 seconds...")
+                    time.sleep(60)
+                    continue
+                return
+            data = response.json()
+            logger.debug(f"Twitter API response: {json.dumps(data, indent=2)}")
+            break
+        except Exception as e:
+            logger.error(f"Twitter request error: {e}")
+            time.sleep(2)
+            continue
+    else:
+        logger.error("❌ Twitter API failed after 3 retries")
+        return
 
-                retry_count = 0  # Reset on successful connection
-                for line in response.iter_lines():
-                    if line:
-                        try:
-                            data = json.loads(line)
-                            poll_data = handle_poll_tweet(data)
-                            if poll_data:
-                                logger.info(f"Processed poll data: {poll_data}")
-                        except json.JSONDecodeError as e:
-                            logger.error(f"JSON decode error: {e} - Line: {line}")
-                            continue
+    if not data.get("data"):
+        logger.info("No relevant tweets found.")
+        return
 
-                    # Heartbeat to confirm stream is active
-                    if time.time() - last_heartbeat > 300:  # 5 minutes
-                        logger.info("Stream is still active...")
-                        print("💓 Stream is still active...")
-                        last_heartbeat = time.time()
+    processed_ids = fetch_processed_ids_from_gist()
+    new_ids = set()
 
-        except (requests.exceptions.RequestException, Exception) as e:
-            logger.error(f"Stream error: {e}. Reconnecting in {base_delay * (2 ** retry_count):.2f} seconds...")
-            print(f"❌ Stream error: {e}. Reconnecting in {base_delay * (2 ** retry_count):.2f} seconds...")
-            time.sleep(base_delay * (2 ** retry_count))
-            retry_count += 1
-            if retry_count >= max_retries:
-                logger.error("Max retries reached. Exiting...")
-                print("❌ Max retries reached. Exiting...")
-                sys.exit(1)
+    for tweet in data["data"]:
+        tweet_id = tweet["id"]
+        logger.debug(f"Processing tweet ID {tweet_id}: {tweet.get('text')}")
+        if tweet_id in processed_ids:
+            logger.debug(f"Skipping duplicate tweet ID {tweet_id}")
+            continue
+        full_data = {"data": tweet, "includes": data.get("includes", {})}
+        if handle_poll_tweet(full_data):
+            new_ids.add(tweet_id)
 
-# === FUNCTION: Handle Poll Tweet ===
+    if new_ids:
+        update_gist_with_new_ids(processed_ids, new_ids)
+
+# === POLL HANDLER ===
 def handle_poll_tweet(data):
-    """
-    Checks if the tweet has a poll, verifies if poll options contain candidate names,
-    and processes the tweet if relevant (alerts Telegram, saves to CSV).
-    Returns poll data if a candidate name is found.
-    """
     tweet = data.get('data', {})
-    if not (polls := data.get("includes", {}).get("polls", [])):
-        logger.debug(f"No poll info for tweet ID {tweet.get('id')}: {data}")
-        return None
+    tweet_id = tweet.get('id', 'Unknown')
+    
+    # Check for poll attachments
+    attachments = tweet.get('attachments', {})
+    poll_ids = attachments.get('poll_ids', [])
+    logger.debug(f"Tweet {tweet_id} attachments: {attachments}")
+    
+    if not poll_ids:
+        logger.debug(f"No poll IDs found in tweet {tweet_id}")
+        return False
 
-    users = data.get('includes', {}).get('users', [{}])
+    # Check for poll data in includes
+    polls = data.get("includes", {}).get("polls", [])
+    logger.debug(f"Tweet {tweet_id} polls: {polls}")
+    
+    if not polls:
+        logger.debug(f"No polls found in tweet {tweet_id} despite poll_ids")
+        return False
+
+    users = data.get("includes", {}).get("users", [{}])
     username = users[0].get('username', 'Unknown') if users else 'Unknown'
 
     for poll in polls:
-        logger.debug(f"Poll found: {poll}")
-        tweet_id = tweet.get("id")
-        tweet_text = tweet.get("text", "").encode('utf-8', errors='ignore').decode('utf-8')
-        author_id = tweet.get("author_id")
-        created_at = tweet.get("created_at")
-        poll_end = poll.get("end_datetime")
-        duration = poll.get("duration_minutes")
-        voting_status = poll.get("voting_status")
+        tweet_text = tweet.get("text", "")
         options = poll.get("options", [])
-
-        # Confirm it's a poll with options
+        logger.debug(f"Poll options for tweet {tweet_id}: {[opt['label'] for opt in options]}")
+        
+        # Skip if no options or blocklist words are present
         if not options:
-            logger.warning(f"Tweet ID {tweet_id} has no poll options, skipping.")
-            print(f"⚠️ Tweet ID {tweet_id} has no poll options, skipping.")
-            continue
-
-        # Check if tweet is irrelevant based on blocklist
+            logger.debug(f"Tweet {tweet_id} filtered: empty poll options")
+            return False
         if any(word in tweet_text.lower() for word in BLOCKLIST):
-            logger.info(f"Tweet ID {tweet_id} is a poll but contains blocklist words: {tweet_text}")
-            print(f"ℹ️ Tweet ID {tweet_id} is a poll but contains blocklist words: {tweet_text}")
-            continue
+            logger.debug(f"Tweet {tweet_id} filtered: blocklist match ({[word for word in BLOCKLIST if word in tweet_text.lower()]})")
+            return False
+        
+        # Check for candidate names in poll options
+        if not any(candidate.lower() in opt['label'].lower() for opt in options for candidate in CANDIDATE_NAMES):
+            logger.debug(f"Tweet {tweet_id} filtered: no candidate names in options")
+            return False
 
-        # Check if any poll option contains a candidate name (case-insensitive)
-        options_str = ", ".join([opt['label'] for opt in options])
-        is_candidate_poll = any(
-            candidate.lower() in opt['label'].lower()
-            for opt in options
-            for candidate in CANDIDATE_NAMES
-        )
-
-        if not is_candidate_poll:
-            logger.info(f"Tweet ID {tweet_id} is a poll but no candidate names found in options: {options_str}")
-            print(f"ℹ️ Tweet ID {tweet_id} is a poll but no candidate names found in options: {options_str}")
-            continue
-
-        # Log confirmation
-        logger.info(f"Tweet ID {tweet_id} is a relevant poll with candidate names")
-        print(f"✅ Tweet ID {tweet_id} is a relevant poll with candidate names")
-
-        # Convert timestamps to EAT (UTC+3) for Telegram alert
+        # Process valid poll
         utc_zone = pytz.UTC
         eat_zone = pytz.timezone('Africa/Nairobi')
         try:
-            created_at_dt = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%S.%fZ")
-            poll_end_dt = datetime.strptime(poll_end, "%Y-%m-%dT%H:%M:%S.%fZ")
+            created_at_dt = datetime.strptime(tweet['created_at'], "%Y-%m-%dT%H:%M:%S.%fZ")
+            poll_end_dt = datetime.strptime(poll['end_datetime'], "%Y-%m-%dT%H:%M:%S.%fZ")
         except ValueError:
-            created_at_dt = datetime.strptime(created_at, "%Y-%m-%dT%H:%M:%SZ")
-            poll_end_dt = datetime.strptime(poll_end, "%Y-%m-%dT%H:%M:%SZ")
-        created_at_dt = utc_zone.localize(created_at_dt).astimezone(eat_zone)
-        poll_end_dt = utc_zone.localize(poll_end_dt).astimezone(eat_zone)
-        created_at_eat = created_at_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
-        poll_end_eat = poll_end_dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+            created_at_dt = datetime.strptime(tweet['created_at'], "%Y-%m-%dT%H:%M:%SZ")
+            poll_end_dt = datetime.strptime(poll['end_datetime'], "%Y-%m-%dT%H:%M:%SZ")
+        created_at_eat = utc_zone.localize(created_at_dt).astimezone(eat_zone).strftime("%Y-%m-%d %H:%M:%S")
+        poll_end_eat = utc_zone.localize(poll_end_dt).astimezone(eat_zone).strftime("%Y-%m-%d %H:%M:%S")
 
         tweet_url = f"https://x.com/i/web/status/{tweet_id}"
-
-        # Format alert text for Telegram
         alert_text = (
             f"📊 *Kenya President Poll Detected!*\n"
-            f"✅ *Confirmed: Poll contains candidate names*\n"
-            f"👤 Username: `@{username}`\n"
-            f"🆔 Author ID: `{author_id}`\n"
-            f"🕒 Created: `{created_at_eat}`\n"
+            f"👤 @`{username}`\n"
+            f"🕒 `{created_at_eat}`\n"
             f"🔗 [View Tweet]({tweet_url})\n"
-            f"🗳️ *Poll Text:* {tweet_text}\n"
+            f"🗳️ *Text:* {tweet_text}\n"
             f"📅 Ends: `{poll_end_eat}`\n"
-            f"⏱️ Duration: {duration} min\n"
-            f"📌 Status: `{voting_status}`\n"
-            f"*Poll Options:*\n" +
-            "\n".join([f"- `{opt['label']}`" for opt in options])
+            f"⏱️ Duration: {poll.get('duration_minutes')} min\n"
+            f"*Options:*\n" + "\n".join([f"- `{opt['label']}`" for opt in options])
         )
 
-        # Send alert via Telegram bot
+        logger.info(f"Sending Telegram alert for tweet {tweet_id}")
         send_telegram_alert(alert_text)
+        save_poll_to_csv(tweet_id, tweet.get("author_id"), username, tweet_text, tweet['created_at'],
+                         poll['end_datetime'], poll.get("duration_minutes"), poll.get("voting_status"), options)
+        return True
+    return False
 
-        # Save tweet + poll data locally
-        save_poll_to_csv(tweet_id, author_id, username, tweet_text, created_at, poll_end, duration, voting_status, options)
-
-        # Return poll data for further processing
-        poll_data = {
-            "tweet_id": tweet_id,
-            "username": username,
-            "text": tweet_text,
-            "options": [opt['label'] for opt in options],
-            "is_poll": True,
-            "contains_candidates": True
-        }
-        logger.info(f"Returning poll data: {poll_data}")
-        return poll_data
-
-    return None
-
-# === FUNCTION: Send Alert to Telegram ===
+# === TELEGRAM ALERT ===
 def send_telegram_alert(message):
-    """
-    Sends a Markdown-formatted message to the configured Telegram bot and chat.
-    """
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    payload = {
-        'chat_id': TELEGRAM_CHAT_ID,
-        'text': message,
-        'parse_mode': 'Markdown'
-    }
+    payload = {'chat_id': TELEGRAM_CHAT_ID, 'text': message, 'parse_mode': 'Markdown'}
     for attempt in range(3):
         try:
-            response = requests.post(url, json=payload, timeout=10)
-            if response.status_code != 200:
-                logger.error(f"Telegram error: {response.status_code} - {response.text}")
-                print(f"❌ Telegram error: {response.status_code} - {response.text}")
-                time.sleep(2)
-                continue
-            logger.info("Alert sent to Telegram")
-            print("✅ Alert sent to Telegram")
-            return
-        except requests.exceptions.RequestException as e:
+            r = requests.post(url, json=payload, timeout=10)
+            if r.status_code == 200:
+                logger.info("✅ Telegram alert sent")
+                return
+            logger.error(f"Telegram error: {r.status_code} - {r.text}")
+        except Exception as e:
             logger.error(f"Telegram request error: {e}")
-            print(f"❌ Telegram request error: {e}")
-            time.sleep(2)
-    logger.error("Failed to send Telegram alert after retries")
-    print("❌ Failed to send Telegram alert after retries")
+        time.sleep(2)
+    logger.error("❌ Telegram alert failed after retries")
 
-# === FUNCTION: Save Poll Data to CSV ===
+# === CSV STORAGE ===
 def save_poll_to_csv(tweet_id, author_id, username, tweet_text, created_at, poll_end, duration, voting_status, options):
-    """
-    Writes tweet and poll details into a local CSV file for storage or review.
-    """
-    file_exists = False
-    try:
-        with open(OUTPUT_CSV, 'r', encoding='utf-8'):
-            file_exists = True
-    except FileNotFoundError:
-        pass
-
+    file_exists = os.path.exists(OUTPUT_CSV)
     try:
         with open(OUTPUT_CSV, 'a', newline='', encoding='utf-8') as file:
             writer = csv.writer(file)
             if not file_exists:
-                writer.writerow(['Tweet ID', 'Author ID', 'Username', 'Tweet Text', 'Created At', 'Poll End', 'Duration (min)', 'Status', 'Options'])
+                writer.writerow(['Tweet ID', 'Author ID', 'Username', 'Tweet Text', 'Created At', 'Poll End',
+                                 'Duration (min)', 'Status', 'Options'])
             options_str = "; ".join([opt['label'] for opt in options])
             writer.writerow([tweet_id, author_id, username, tweet_text, created_at, poll_end, duration, voting_status, options_str])
-            logger.info(f"Poll tweet {tweet_id} saved to CSV")
-            print("📥 Poll tweet saved to CSV")
+            logger.info(f"📥 Tweet {tweet_id} saved to CSV")
     except Exception as e:
-        logger.error(f"Error saving to CSV: {e}")
-        print(f"❌ Error saving to CSV: {e}")
+        logger.error(f"CSV save error: {e}")
 
-# === MAIN EXECUTION FLOW ===
+# === MAIN ===
 if __name__ == '__main__':
     try:
-        if set_rules():
-            start_stream()
-        else:
-            print("❌ Failed to set Twitter stream rules. Exiting...")
-            sys.exit(1)
-    except KeyboardInterrupt:
-        logger.info("Stopping poll detection stream...")
-        print("🛑 Stopping poll detection stream...")
-        sys.exit(0)
+        search_recent_tweets()
+        logger.info("✅ Script completed successfully")
+    except Exception as e:
+        logger.error(f"❌ Unexpected error: {e}")
+        sys.exit(1)
