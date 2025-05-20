@@ -24,19 +24,31 @@ console_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(
 logger.addHandler(console_handler)
 
 # === CONFIG ===
+logging.basicConfig(level=logging.DEBUG)
+
 try:
+    # Get the environment variables
     BEARER_TOKEN = os.getenv('BEARER_TOKEN')
     TELEGRAM_BOT_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
     TELEGRAM_CHAT_ID = os.getenv('TELEGRAM_CHAT_ID')
-    OUTPUT_CSV = os.getenv('OUTPUT_CSV', 'output.csv')
+    OUTPUT_CSV = os.getenv('OUTPUT_CSV', 'output.csv')  # Default to 'output.csv' if not set
     GT_TOKEN = os.getenv('GT_TOKEN')
     GIST_ID = os.getenv('GIST_ID')
 
+    # Debug logs for the environment variables
+    logging.debug(f"BEARER_TOKEN: {BEARER_TOKEN}")
+    logging.debug(f"TELEGRAM_BOT_TOKEN: {TELEGRAM_BOT_TOKEN}")
+    logging.debug(f"TELEGRAM_CHAT_ID: {TELEGRAM_CHAT_ID}")
+    logging.debug(f"GT_TOKEN: {GT_TOKEN}")
+    logging.debug(f"GIST_ID: {GIST_ID}")
+
+    # Check for missing variables
     for var in [BEARER_TOKEN, TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID, GT_TOKEN, GIST_ID]:
         if not var:
-            raise ValueError("Missing required environment variable.")
+            raise ValueError(f"Missing required environment variable: {var}")
+
 except Exception as e:
-    logger.error(f"❌ Config error: {e}")
+    logging.error(f"❌ Config error: {e}")
     sys.exit(1)
 
 # === CONSTANTS ===
