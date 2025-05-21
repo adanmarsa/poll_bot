@@ -52,9 +52,9 @@ except Exception as e:
     sys.exit(1)
 
 # === CONSTANTS ===
-RULE_VALUE = '-is:retweet from:LacaNew'   # Added candidate names
-CANDIDATE_NAMES = ["Ruto", "William Ruto", "Rigathi", "Gachagua", "Matiangi", "Musyoka", "Omtatah", "Maraga", "Kalonzo"]
-BLOCKLIST = ["movie", "food", "sport", "city", "music"]  # Re-enabled blocklist
+RULE_VALUE = '-is:retweet ("if elections were held today" OR "who would you vote for" OR "president Kenya")'   # Added candidate names
+CANDIDATE_NAMES = ["fred matiangi","Ruto", "William Ruto", "Rigathi", "Gachagua", "Matiangi", "Musyoka", "Omtatah", "Maraga", "Kalonzo","Matiang'i"]
+BLOCKLIST = ["movie", "food", "sport", "city", "music","scotland","united states","trump","USA","US","ireland","wales"]  # Re-enabled blocklist
 HEADERS = {'Authorization': f'Bearer {BEARER_TOKEN}', 'Content-type': 'application/json'}
 
 # === GIST STORAGE ===
