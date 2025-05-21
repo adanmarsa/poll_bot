@@ -52,7 +52,7 @@ except Exception as e:
     sys.exit(1)
 
 # === CONSTANTS ===
-RULE_VALUE = '-is:retweet ("if elections were held today" OR "who would you vote for" OR "president Kenya")'   # Added candidate names
+RULE_VALUE = '-is:retweet ("who would you vote for" OR "would you vote for" OR "if elections were held today" OR "president Kenya" OR Ruto OR Matiang\'i OR place:KE)'   # Added candidate names
 CANDIDATE_NAMES = ["fred matiangi","Ruto", "William Ruto", "Rigathi", "Gachagua", "Matiangi", "Musyoka", "Omtatah", "Maraga", "Kalonzo","Matiang'i"]
 BLOCKLIST = ["movie", "food", "sport", "city", "music","scotland","united states","trump","USA","US","ireland","wales"]  # Re-enabled blocklist
 HEADERS = {'Authorization': f'Bearer {BEARER_TOKEN}', 'Content-type': 'application/json'}
